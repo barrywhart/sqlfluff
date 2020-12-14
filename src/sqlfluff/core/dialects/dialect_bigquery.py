@@ -46,8 +46,13 @@ bigquery_dialect.patch_lexer_struct(
 
 bigquery_dialect.add(
     DoubleQuotedLiteralSegment=NamedSegment.make(
-        "double_quote", name="quoted_literal", type="literal", trim_chars=('"',)
-    )
+        "double_quote", name="quoted_literal", type="literal", trim_chars=('"',),
+    ),
+    StartAngleBracketSegment=KeywordSegment.make('<',
+                                                 name='start_angle_bracket',
+                                                 type='start_angle_bracket'),
+    EndAngleBracketSegment=KeywordSegment.make('>', name='end_angle_bracket',
+                                               type='end_angle_bracket')
 )
 
 # Add additional datetime units
@@ -58,6 +63,7 @@ bigquery_dialect.sets("datetime_units").update(
 
 # Unreserved Keywords
 bigquery_dialect.sets("unreserved_keywords").add("SYSTEM_TIME")
+bigquery_dialect.sets("unreserved_keywords").add("STRUCT")
 bigquery_dialect.sets("unreserved_keywords").remove("FOR")
 # Reserved Keywords
 bigquery_dialect.sets("reserved_keywords").add("FOR")
@@ -145,4 +151,183 @@ class ReplaceClauseSegment(BaseSegment):
             # Single replace not in brackets.
             Ref("SelectTargetElementSegment"),
         ),
+    )
+
+
+@bigquery_dialect.segment()
+class FunctionDefinitionSegment(BaseSegment):
+    type = "create_function_statement"
+    match_grammar = Sequence(
+        AnyNumberOf(
+            Sequence(
+                'LANGUAGE',
+                # Not really a parameter, but best fit for now.
+                Ref('ParameterNameSegment'),
+                Sequence(
+                    'OPTIONS',
+                    Bracketed(
+                        Delimited(
+                            Sequence(
+                                Ref('ParameterNameSegment'),
+                                Ref('EqualsSegment'),
+                                Anything()
+                            ),
+                            delimiter=Ref('CommaSegment')
+                        )
+                    ),
+                    optional=True
+                )
+            ),
+            # There is some syntax not implemented here,
+            Sequence(
+                'AS',
+                OneOf(
+                    Ref('DoubleQuotedLiteralSegment'),
+                    Ref('QuotedLiteralSegment'),
+                    Bracketed(
+                        OneOf(
+                            Ref('ExpressionSegment'),
+                            Ref('SelectStatementSegment')
+                        )
+                    )
+                ),
+            )
+        )
+    ),
+    DialectSpecificStatementsGrammar=OneOf(
+        Ref('CreateModelStatementSegment'), Ref('DropModelStatementSegment')
+    ),
+    DialectSpecificTableExpressionGrammar=Ref('MLTableExpressionSegment')
+
+
+@bigquery_dialect.segment(replace=True)
+class DatatypeSegment(BaseSegment):
+    """A data type segment.
+    In particular here, this enabled the support for
+    the STRUCT datatypes.
+    """
+    type = 'data_type'
+    match_grammar = OneOf(  # Parameter type
+        Ref('ParameterNameSegment'),  # Simple type
+        Sequence(  # SQL UDFs can specify this "type"
+            'ANY',
+            'TYPE'
+        ),
+        Sequence(
+            'ARRAY',
+            Bracketed(
+                Ref('DatatypeSegment'),
+                bracket_type='angle'
+            )
+        ),
+        Sequence(
+            'STRUCT',
+            Bracketed(
+                Delimited(  # Comma-separated list of field names/types
+                    Sequence(
+                        Ref('ParameterNameSegment'),
+                        Ref('DatatypeSegment')
+                    ),
+                    delimiter=Ref('CommaSegment')
+                ),
+                bracket_type='angle'
+            ),
+        )
+    )
+
+
+@bigquery_dialect.segment()
+class CreateModelStatementSegment(BaseSegment):
+    """A BigQuery `CREATE MODEL` statement."""
+    type = 'create_model_statement'
+    # https://cloud.google.com/bigquery-ml/docs/reference/standard-sql/bigqueryml-syntax-create
+    match_grammar = Sequence(
+        'CREATE',
+        Sequence(
+            'OR',
+            'REPLACE',
+            optional=True
+        ),
+        'MODEL',
+        Sequence(
+            'IF',
+            'NOT',
+            'EXISTS',
+            optional=True
+        ),
+        Ref('ObjectReferenceSegment'),
+        Sequence(
+            'OPTIONS',
+            Bracketed(
+                Delimited(
+                    Sequence(
+                        Ref('ParameterNameSegment'),
+                        Ref('EqualsSegment'),
+                        OneOf(
+                            # This covers many but not all the extensive list of
+                            # possible 'CREATE MODEL' optiona.
+                            Ref('LiteralGrammar'),  # Single value
+                            Bracketed(
+                                # E.g. input_label_cols: list of column names
+                                Delimited(
+                                    Ref('QuotedLiteralSegment'),
+                                    delimiter=Ref('CommaSegment')
+                                ),
+                                bracket_type='square',
+                                optional=True
+                            ),
+                        )
+                    ),
+                    delimiter=Ref('CommaSegment')
+                )
+            ),
+            optional=True
+        ),
+        'AS',
+        Ref('SelectStatementSegment')
+    )
+
+
+@bigquery_dialect.segment()
+class DropModelStatementSegment(BaseSegment):
+    """A `DROP MODEL` statement."""
+    type = 'drop_model_statement'
+    # DROP MODEL <Model name> [IF EXISTS}
+    # https://cloud.google.com/bigquery-ml/docs/reference/standard-sql/bigqueryml-syntax-drop-model
+    match_grammar = Sequence(
+        'DROP',
+        'MODEL',
+        Sequence(
+            'IF',
+            'EXISTS',
+            optional=True
+        ),
+        Ref('ObjectReferenceSegment')
+    )
+
+
+@bigquery_dialect.segment()
+class MLTableExpressionSegment(BaseSegment):
+    """An ML table expression."""
+    type = 'ml_table_expression'
+    # E.g. ML.WEIGHTS(MODEL `project.dataset.model`)
+    match_grammar = Sequence(
+        'ML',
+        Ref('DotSegment'),
+        Ref('SingleIdentifierGrammar'),
+        Bracketed(
+            Sequence(
+                'MODEL',
+                Ref('ObjectReferenceSegment')
+            ),
+            OneOf(
+                Sequence(
+                    Ref('CommaSegment'),
+                    Bracketed(
+                        Ref('SelectStatementSegment')
+                    )
+                ),
+                optional=True
+            )
+        )
     )

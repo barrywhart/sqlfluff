@@ -327,6 +327,20 @@ class IntervalExpressionSegment(BaseSegment):
 
 
 @ansi_dialect.segment()
+class ArrayLiteralSegment(BaseSegment):
+    """A data type segment."""
+    type = 'array_literal_type'
+    match_grammar = Bracketed(
+        Delimited(
+            Ref('ExpressionSegment'),
+            delimiter=Ref('CommaSegment')
+        ),
+        # Use square brackets
+        square=True,
+    )
+
+
+@ansi_dialect.segment()
 class DatatypeSegment(BaseSegment):
     """A data type segment."""
 
@@ -1060,6 +1074,7 @@ ansi_dialect.add(
             Ref("LiteralGrammar"),
             Ref("IntervalExpressionSegment"),
             Ref("ColumnReferenceSegment"),
+            Ref('ArrayLiteralSegment'),
         ),
         Ref("Accessor_Grammar", optional=True),
         Ref("ShorthandCastSegment", optional=True),
@@ -1760,6 +1775,100 @@ class SetClauseSegment(BaseSegment):
     )
 
 
+ansi_dialect.add(
+    # This is a hook point to allow subclassing for other dialects.
+    # In the ANSI dialect this is designed to be a basic starting point.
+    FunctionDefinitionGrammar=Sequence(
+        'AS',
+        Ref('QuotedLiteralSegment'),
+        Sequence(
+            'LANGUAGE',
+            # Not really a parameter, but best fit for now.
+            Ref('ParameterNameSegment'),
+            optional=True
+        ),
+    ),
+    # Hook point for other dialects to define new kinds of statement
+    DialectSpecificStatementsGrammar=Nothing()
+)
+
+
+@ansi_dialect.segment()
+class CreateFunctionStatementSegment(BaseSegment):
+    """A `CREATE FUNCTION` statement.
+    This version in the ANSI dialect should be a "common subset" of the
+    structure of the code for those dialects.
+    postgres: https://www.postgresql.org/docs/9.1/sql-createfunction.html
+    snowflake: https://docs.snowflake.com/en/sql-reference/sql/create-function.html
+    bigquery: https://cloud.google.com/bigquery/docs/reference/standard-sql/user-defined-functions
+    """
+    type = 'create_function_statement'
+
+    match_grammar = Sequence(
+        'CREATE',
+        Sequence(
+            'OR',
+            'REPLACE',
+            optional=True
+        ),
+        OneOf(
+            'TEMPORARY',
+            'TEMP',
+            optional=True
+        ),
+        'FUNCTION',
+        Anything()
+    )
+
+    parse_grammar = Sequence(
+        'CREATE',
+        Sequence(
+            'OR',
+            'REPLACE',
+            optional=True
+        ),
+        OneOf(
+            'TEMPORARY',
+            'TEMP',
+            optional=True
+        ),
+        'FUNCTION',
+        Sequence(
+            'IF',
+            'NOT',
+            'EXISTS',
+            optional=True
+        ),
+        Ref('FunctionNameSegment'),
+        # Function parameter list
+        Bracketed(
+            Delimited(
+                # Odd syntax, but prevents eager parameters being confused for data types
+                OneOf(
+                    Sequence(
+                        Ref('ParameterNameSegment', optional=True),
+                        OneOf(
+                            Sequence('ANY', 'TYPE'),
+                            Ref('DatatypeSegment')
+                        )
+                    ),
+                    OneOf(
+                        Sequence('ANY', 'TYPE'),
+                        Ref('DatatypeSegment')
+                    )
+                ),
+                delimiter=Ref('CommaSegment')
+            )
+        ),
+        Sequence(  # Optional function return type
+            'RETURNS',
+            Ref('DatatypeSegment'),
+            optional=True,
+        ),
+        Ref('FunctionDefinitionGrammar')
+    )
+
+
 @ansi_dialect.segment()
 class CreateModelStatementSegment(BaseSegment):
     """A BigQuery `CREATE MODEL` statement."""
@@ -1864,4 +1973,5 @@ class StatementSegment(BaseSegment):
         Ref("UpdateStatementSegment"),
         Ref("CreateModelStatementSegment"),
         Ref("DropModelStatementSegment"),
+        Ref('CreateFunctionStatementSegment'),
     )
